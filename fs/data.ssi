@@ -1,0 +1,13 @@
+{
+    "name": "<!--#name-->",
+    "addr": "<!--#addr-->",
+    "time": "<!--#time-->",
+    "temp": <!--#temp-->,
+    "out": <!--#out-->,
+    "setup": <!--#setup-->,
+    "therm": <!--#therm-->,
+    "mode": <!--#mode-->,
+    "timer1": "<!--#timer1-->",
+    "timer2": "<!--#timer2-->",
+    "mqtt_ip": "<!--#mqtt_ip-->"
+}
