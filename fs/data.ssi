@@ -2,12 +2,12 @@
     "name": "<!--#name-->",
     "addr": "<!--#addr-->",
     "time": "<!--#time-->",
-    "temp": <!--#temp-->,
-    "out": <!--#out-->,
+    "mqtt_ip": "<!--#mqtt_ip-->",
     "setup": <!--#setup-->,
-    "therm": <!--#therm-->,
     "mode": <!--#mode-->,
+    "temp": <!--#temp-->,
+    "therm": <!--#therm-->,
     "timer1": "<!--#timer1-->",
     "timer2": "<!--#timer2-->",
-    "mqtt_ip": "<!--#mqtt_ip-->"
+    "out": <!--#out-->
 }

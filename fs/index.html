@@ -180,11 +180,11 @@
         <h2 id="title"></h2>
     </header>
     <section>
-        <nav id="nav">
+        <nav id="nav" class="hide">
             <button type="button" onclick="document.location = '#status'">Status</button>
             <button type="button" onclick="document.location = '#settings'">Settings</button>
         </nav>
-        <article id="status">
+        <article id="status" class="hide">
             <h1>Status</h1>
             <p>Temperature</p>
             <div class="bar">
@@ -200,7 +200,7 @@
                 <span id="outOff" class="off">OFF</span>
             <p></p>
         </article>
-        <article id="settings">
+        <article id="settings" class="hide">
             <h1>Settings</h1>
             <form name="settings">
                 <input type="hidden" name="tz" />
@@ -237,7 +237,7 @@
                 <P><input type="submit" value="Set" /></P>
             </form>
         </article>
-        <article id="setup">
+        <article id="setup" class="hide">
             <h1>Wi-Fi</h1>
             <form name="setup">
                 <p>

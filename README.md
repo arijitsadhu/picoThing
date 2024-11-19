@@ -1,20 +1,21 @@
 # picoThing
 
-Raspberry Pi Pico-W IOT demonstrator
+Raspberry Pi Pico W IOT demonstrator.
 
 ## Introduction
 
-Objective of this project is to be a template for simple IOT projects with the pico-w using the existing pico-w C SDK and built in lwIP stack to its full potential with the following features:
-* Appless
-* Wifi connected
-* Initial wifi setup by starting in Wifi Access Point mode to open configuration page
+Objective of this project is to be a template for simple IOT projects with the pico-w using the existing Raspberry Pi Pico W C SDK and built in lwIP stack to its full potential with the following features:
+* App-less
+* Wi-Fi connected
+* Initial Wi-Fi setup by starting in Wi-Fi Access Point mode to open configuration page
 * Built in web server with web UI
-* Bonjor access
-* SNTP time
+* Bonjour (mDNS) access
+* SNTP time with RTC (AON Timer)
 * MQTT
 * QR code to display Access point and then URL of the device
 * Configuration storage in flash
 * Unique naming from mac address
+* Power saving
 * Using Pimoroni Pico Inky Pack UC8151 display
 * VS-Code devcontainer integration with build and debug
 
@@ -24,7 +25,7 @@ Included some CMake examples for subdirectories, libraries and external reposito
 
 ### What it does
 
-The demo reads and displays time and temperature and drived on board LED according to the mode and time and temperture settings.
+The demo reads and displays time and temperature and drive on board LED according to the mode and time and temperature settings.
 
 MQTT allows to behave as slave to change mode which drives the output and read temperature and output state.
 
@@ -32,7 +33,7 @@ MQTT allows to behave as slave to change mode which drives the output and read t
 
 ### Native Build
 Prerequisites:
-* Install pico sdk and toolchain according to getting started with raspberry pi pico document (#References).
+* Install Pico C SDK and toolchain according to getting started with Raspberry Pi Pico document (#References).
 
 Build:
 ```
@@ -45,7 +46,7 @@ make -j4
 Prerequisites:
 * docker
 
-build:
+Build:
 ```
 docker build -t development .
 docker run -it --rm -v $(pwd -P):$(pwd -P) -w $(pwd -P) development sh -c 'mkdir build && cd build && cmake -DCMAKE_BUILD_TYPE=Debug -DPICO_BOARD=pico_w .. && make -j4'
@@ -55,7 +56,7 @@ Prerequisites:
 * docker
 * vscode
 
-build:
+Build:
 
 Open project and accept the prompt for devcontainer.
 
@@ -65,7 +66,7 @@ Once container built when prompt for compiler choose `arm-none-eabi`.
 ## Debugging
 
 ### Pico Debug probe swd
-Use picoprobe for debug
+Use picoprobe for debug.
 
 If using a Raspberry pi:
 ```
@@ -79,8 +80,8 @@ minicom -b 115200 -o -D /dev/serial0
 ```
 minicom -b 115200 -o -D /dev/ttyACM0
 ```
-### Pico Debug raspberrypi swd
-Using raspberry pi swd directly:
+### Pico Debug Raspberry Pi SWD
+Using Raspberry Pi SWD directly:
 ```
 raspberry pi pin 18 -> pico-w swdio
 raspberry pi pin 20 -> pico-w swgnd
@@ -107,7 +108,7 @@ minicom -b 115200 -o -D /dev/ttyACM0
 
 ![pizero gpio swd](debug.jpeg)
 
-Same as raspberrypi swd but using a raspberry pi zero gpio as debug probe over wifi
+Same as Raspberry Pi SWD but using a raspberry pi zero GPIO as debug probe over wifi.
 
 ```
 raspberry pi pin 18 -> pico-w swdio
@@ -115,7 +116,7 @@ raspberry pi pin 20 -> pico-w swgnd
 raspberry pi pin 22 -> pico-w swclk
 ```
 
-Install [Raspberry Pi OS Lite](https://www.raspberrypi.com/software/operating-systems/) with ssh and in the debug raspberry pi:
+Install [Raspberry Pi OS Lite](https://www.raspberrypi.com/software/operating-systems/) with ssh and in the debug Raspberry Pi:
 ```
 sudo apt install openocd minicom
 ```
@@ -135,18 +136,18 @@ minicom -b 115200 -o -D /dev/ttyACM0
 
 Change `gdbTarget` in `.vscode/launch.json` to the debugger raspberry pi ip address
 
-## wifi
-Wifi can be configured in the build with the `WIFI_SSID` and `WIFI_PASSWORD` defines:
+## Wi-Fi
+Wi-Fi can be configured in the build with the `WIFI_SSID` and `WIFI_PASSWORD` defines:
 ```
 cmake -DCMAKE_BUILD_TYPE=Debug -DPICO_BOARD=pico_w -DWIFI_SSID=<my ssid> -DWIFI_PASSWORD=<my password> ..
 ```
 in vscode change `cmake.configureArgs` in `.vscose/launch.json`.
 
-When wifi is not found it will start as an wifi access point with unique name based on project name and mac address and direct to default page to configure wifi credentials.
+When Wi-Fi is not found it will start as an Wi-Fi access point with unique name based on project name and mac address and direct to default page to configure Wi-Fi credentials.
 
 Note that a wifi access point needs a DHCP and DNS server, unfortunately lwIP does not provide one but fortunately there is one in TinyUSB stack in the Pico C SDK.
 
-## webserver
+## web-server
 Using lwIP HTTPD with SSI, CGI and makefsdata serializer, files are placed in `fs` directory.
 
 When submitting the configuration on the page it is designed to set the the time and time-zone from the browser. Not normally recommended but is a seamless way to set the time.
@@ -156,25 +157,30 @@ Display is used to qr code for device discovery and connection and example data.
 
 Using pimoroni Inky pHAT UC8151 e-paper display. e-paper looks quite good and is low power although is slow to update but suits this application quite well. Note that the display although mounted in a landscape format the hardware raster is actually is in portrait format. The driver and api have the axis swapped to landscape format but the graphics and fonts need to be flipped manually to save processing on the device. 
 
-Provided is a simple API to draw bmp files and draw text, QR codes are created using the QR Code generator library
+Provided is a simple API to draw BMP files and draw text, QR codes are created using the QR Code generator library.
 
 ### XBM
-Import directly
+Import directly.
 
-only 8 pixels high, invert colours, make mode 1 bit and rotate 90˚ clockwise
+Only 8 pixels high, invert colours, make mode 1 bit and rotate 90˚ clockwise.
 
 ### BMP
 Using the file serialization from lwIP makefsdata in `fs` directory.
 
-multiple of 32 pixels high, make mode 1 bit and rotate 90˚ anti-clockwise
+Multiple of 32 pixels high, make mode 1 bit and rotate 90˚ anti-clockwise.
 
 ### Fonts
-Fonts can be XBM or BMP
+Fonts can be XBM or BMP.
 
 Use the following string to create a font:
 ```
  !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ["]^_`abcdefghijklmnopqrstuvwxyz{|}~
 ```
+
+## TODO
+* Low power with suspend and RTC.
+* Home Assistant Integration.
+* Code tree restructuring for builds with other devices like sensors, actuators etc.
 
 ## References
 * [Getting started with Raspberry Pi Pico](https://datasheets.raspberrypi.com/pico/getting-started-with-pico.pdf)
@@ -187,3 +193,4 @@ Use the following string to create a font:
 * [Custom Fonts for Microcontrollers](https://jared.geek.nz/2014/01/custom-fonts-for-microcontrollers/)
 * [iconify](https://iconify.design/) [System UIcons](https://icon-sets.iconify.design/system-uicons/)
 * [lwHTTPd](http://scaprile.ldir.com.ar/cms/el-ingeniero/open-source-projects-im-working-on/lwhttpd/)
+* [Awaking the Raspberry Pico from deep sleep](https://ghubcoder.github.io/posts/awaking-the-pico/)

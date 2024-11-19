@@ -16,13 +16,13 @@
 
 #include "hardware/adc.h"
 #include "hardware/flash.h"
-#include "hardware/rtc.h"
 #include "hardware/sync.h"
 #include "hardware/watchdog.h"
 #include "lwip/apps/httpd.h"
 #include "lwip/apps/mdns.h"
 #include "lwip/apps/mqtt.h"
 #include "lwip/apps/sntp.h"
+#include "pico/aon_timer.h"
 #include "pico/binary_info.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
@@ -43,7 +43,7 @@
 #define WIFI_TIMEOUT (15000)
 
 /**
- * @brief Watchdoc timeout in ms
+ * @brief Watchdog timeout in ms
  *
  * Should take in account Wi-Fi timout and display time
  */
@@ -79,12 +79,12 @@
         PP_HTONL(LWIP_MAKEU32(a, b, c, d)) \
     }
 
-// button gpio mappings
+// button GPIO mappings
 #define BTNA (12)
 #define BTNB (13)
 #define BTNC (14)
 
-// gpio event types
+// GPIO event types
 #define LEVEL_LOW (0x1)
 #define LEVEL_HIGH (0x2)
 #define EDGE_FALL (0x4)
@@ -104,8 +104,10 @@ extern cyw43_t cyw43_state;
  */
 typedef enum {
     ST_BOOT = 0,
+    ST_CONNECT,
     ST_SETUP,
     ST_WAIT,
+    ST_RETRY,
     ST_INIT,
     ST_RUN,
     ST_RESET,
@@ -131,14 +133,14 @@ typedef enum {
     TAG_NAME = 0,
     TAG_ADDR,
     TAG_TIME,
-    TAG_TEMP,
-    TAG_OUT,
+    TAG_MQTT_IP,
     TAG_SETUP,
-    TAG_THERM,
     TAG_MODE,
+    TAG_TEMP,
+    TAG_THERM,
     TAG_TIMER1,
     TAG_TIMER2,
-    TAG_MQTT_IP,
+    TAG_OUT,
     TAG_MAX
 } http_ssi_tags_t;
 
@@ -152,7 +154,7 @@ typedef enum {
 } mqtt_topics_t;
 
 /**
- * @brief Flashable Configuration Type
+ * @brief Flash-able Configuration Type
  *
  */
 typedef union {
@@ -160,12 +162,12 @@ typedef union {
         uint32_t magic; ///< Flash verification
         char ssid[33]; ///< Wi-Fi SSID
         char pass[65]; ///< Wi-Fi Password
-        int tz; ///< Timezone in minutes
-        int8_t therm; ///< Thermsotat temperture in C
+        int tz; ///< Time-zone in minutes
+        char mqtt_ip[40]; ///< MQTT IP Address
         modes_t mode; ///< User mode
+        int8_t therm; ///< Thermostat temperature in C
         char timer1[6]; ///< Thermostat start time
         char timer2[6]; ///< Thermostat end time
-        char mqtt_ip[40]; ///< MQTT IP Address
     } data;
     uint8_t padding[FLASH_PAGE_SIZE];
 } config_t;
@@ -181,13 +183,13 @@ typedef struct {
     char name[sizeof(PROGRAM_NAME) + 9]; ///< Identity
     char addr[17]; ///< Own IP address
     char time[10]; ///< Current displayed time
+    bool mqtt_con; ///< MQTT connected to server
+    mqtt_topics_t mqtt_topic; ///< Last MQTT received publish topic
     float temp; ///< Current temperature
-    bool out; ///< Output is driven
     uint32_t btna; ///< Button A state
     uint32_t btnb; ///< Button B state
     uint32_t btnc; ///< Button C state
-    bool mqtt_con; ///< MQTT connected to server
-    mqtt_topics_t mqtt_topic; ///< Last MQTT received publish topic
+    bool out; ///< Output is driven
 } status_t;
 
 /* FUNCTION PROTOTYPES ****************************************/
@@ -214,11 +216,11 @@ static config_t config = {
         .ssid = WIFI_SSID,
         .pass = WIFI_PASSWORD,
         .tz = 0,
-        .therm = 0,
+        .mqtt_ip = "",
         .mode = 0,
+        .therm = 20,
         .timer1 = "00:00",
         .timer2 = "00:00",
-        .mqtt_ip = "",
     }
 };
 
@@ -233,13 +235,13 @@ static status_t status = {
     .name = PROGRAM_NAME,
     .addr = "192.168.4.1",
     .time = "",
+    .mqtt_con = false,
+    .mqtt_topic = TOPIC_MAX,
     .temp = 20.0,
-    .out = false,
     .btna = 0,
     .btnb = 0,
     .btnc = 0,
-    .mqtt_con = false,
-    .mqtt_topic = TOPIC_MAX,
+    .out = false,
 };
 
 /**
@@ -255,7 +257,7 @@ static dhcp_entry_t __not_in_flash("dhserver") dhcp_entries[] = {
 };
 
 /**
- * @brief dhcp configuration
+ * @brief DHCP configuration
  *
  */
 static const dhcp_config_t dhcp_config = {
@@ -268,7 +270,7 @@ static const dhcp_config_t dhcp_config = {
 };
 
 /**
- * @brief http ssi tags
+ * @brief HTTP SSI tags
  *
  * max length of the tags defaults to be 8 chars
  * LWIP_HTTPD_MAX_TAG_NAME_LEN
@@ -277,14 +279,14 @@ static const char* __not_in_flash("httpd") http_ssi_tags[] = {
     [TAG_NAME] = "name",
     [TAG_ADDR] = "addr",
     [TAG_TIME] = "time",
-    [TAG_TEMP] = "temp",
-    [TAG_OUT] = "out",
+    [TAG_MQTT_IP] = "mqtt_ip",
     [TAG_SETUP] = "setup",
-    [TAG_THERM] = "therm",
     [TAG_MODE] = "mode",
+    [TAG_TEMP] = "temp",
+    [TAG_THERM] = "therm",
     [TAG_TIMER1] = "timer1",
     [TAG_TIMER2] = "timer2",
-    [TAG_MQTT_IP] = "mqtt_ip",
+    [TAG_OUT] = "out",
 };
 
 /**
@@ -297,7 +299,7 @@ static const tCGI http_cgi_handlers[] = {
 };
 
 /**
- * @brief MQTT Subscrbed topics
+ * @brief MQTT Subscribed topics
  *
  */
 static const char* __not_in_flash("mqtt") mqtt_topics[] = {
@@ -339,9 +341,9 @@ static void flash_config_load(config_t* config)
 }
 
 /**
- * @brief Callback for gpio button events
+ * @brief Callback for GPIO button events
  *
- * @param gpio gpio no
+ * @param gpio GPIO number
  * @param events event type
  */
 static void gpio_callback(uint gpio, uint32_t events)
@@ -370,7 +372,7 @@ static void out(bool en)
 }
 
 /**
- * @brief url decoder
+ * @brief URL decoder
  *
  * @param text
  */
@@ -421,20 +423,20 @@ static u16_t __time_critical_func(http_ssi_handler)(int iIndex, char* pcInsert, 
     case TAG_TIME:
         printed = snprintf(pcInsert, iInsertLen, "%s", status.time);
         break;
-    case TAG_TEMP:
-        printed = snprintf(pcInsert, iInsertLen, "%.01f", status.temp);
-        break;
-    case TAG_OUT:
-        printed = snprintf(pcInsert, iInsertLen, status.out ? "true" : "false");
-        break;
     case TAG_SETUP:
         printed = snprintf(pcInsert, iInsertLen, ST_RUN == status.state ? "false" : "true");
         break;
-    case TAG_THERM:
-        printed = snprintf(pcInsert, iInsertLen, "%d", config.data.therm);
+    case TAG_MQTT_IP:
+        printed = snprintf(pcInsert, iInsertLen, "%s", config.data.mqtt_ip);
         break;
     case TAG_MODE:
         printed = snprintf(pcInsert, iInsertLen, "%d", config.data.mode);
+        break;
+    case TAG_TEMP:
+        printed = snprintf(pcInsert, iInsertLen, "%.01f", status.temp);
+        break;
+    case TAG_THERM:
+        printed = snprintf(pcInsert, iInsertLen, "%d", config.data.therm);
         break;
     case TAG_TIMER1:
         printed = snprintf(pcInsert, iInsertLen, "%s", config.data.timer1);
@@ -442,15 +444,15 @@ static u16_t __time_critical_func(http_ssi_handler)(int iIndex, char* pcInsert, 
     case TAG_TIMER2:
         printed = snprintf(pcInsert, iInsertLen, "%s", config.data.timer2);
         break;
-    case TAG_MQTT_IP:
-        printed = snprintf(pcInsert, iInsertLen, "%s", config.data.mqtt_ip);
+    case TAG_OUT:
+        printed = snprintf(pcInsert, iInsertLen, status.out ? "true" : "false");
         break;
     }
     return (u16_t)printed;
 }
 
 /**
- * @brief HTTP cgi-handler triggered by a request
+ * @brief HTTP CGI-handler triggered by a request
  *
  * @param iIndex http_cgi_handlers index
  * @param iNumParams number of parameters
@@ -466,47 +468,27 @@ static const char* http_cgi_handler_basic(int iIndex, int iNumParams, char* pcPa
         http_cgi_urldecode(pcValue[i]);
         if (strcmp(pcParam[i], "ssid") == 0) {
             strncpy(config.data.ssid, pcValue[i], sizeof(config.data.ssid));
-            status.state = ST_RESET;
+            status.state = ST_RETRY;
             status.save = true;
         } else if (strcmp(pcParam[i], "pass") == 0) {
             strncpy(config.data.pass, pcValue[i], sizeof(config.data.pass));
-            status.state = ST_RESET;
+            status.state = ST_RETRY;
             status.save = true;
         } else if (strcmp(pcParam[i], "tz") == 0) {
             config.data.tz = atoi(pcValue[i]);
             status.save = true;
         } else if (strcmp(pcParam[i], "time") == 0) {
             time_t now = atoi(pcValue[i]);
-            struct tm* time = localtime(&now);
 
-            datetime_t datetime = {
-                .year = (int16_t)(1900 + time->tm_year),
-                .month = (int8_t)(time->tm_mon + 1),
-                .day = (int8_t)time->tm_mday,
-                .hour = (int8_t)time->tm_hour,
-                .min = (int8_t)time->tm_min,
-                .sec = (int8_t)time->tm_sec,
-                .dotw = (int8_t)time->tm_wday,
+            struct timeval tv = {
+                .tv_sec = now
             };
+            settimeofday(&tv, NULL);
 
-            if (!rtc_set_datetime(&datetime)) {
-                printf("datetime error\n");
-            }
-
-            snprintf(status.time, sizeof(status.time), "%02d:%02d", datetime.hour, datetime.min);
-        } else if (strcmp(pcParam[i], "therm") == 0) {
-            config.data.therm = atoi(pcValue[i]);
-            status.save = true;
-        } else if (strcmp(pcParam[i], "mode") == 0) {
-            uint8_t mode = atoi(pcValue[i]);
-            if (MODE_MAX > mode) {
-                config.data.mode = mode;
-                status.save = true;
-            }
-        } else if (strcmp(pcParam[i], "timer1") == 0) {
-            strncpy(config.data.timer1, pcValue[i], sizeof(config.data.timer1));
-        } else if (strcmp(pcParam[i], "timer2") == 0) {
-            strncpy(config.data.timer2, pcValue[i], sizeof(config.data.timer2));
+            struct timespec ts = {
+                .tv_sec = now
+            };
+            aon_timer_set_time(&ts);
         } else if (strcmp(pcParam[i], "mqtt_ip") == 0) {
             strncpy(config.data.mqtt_ip, pcValue[i], sizeof(config.data.mqtt_ip));
             // force reconnection
@@ -514,6 +496,19 @@ static const char* http_cgi_handler_basic(int iIndex, int iNumParams, char* pcPa
                 mqtt_disconnect(mqtt_client);
                 status.mqtt_con = false;
             }
+        } else if (strcmp(pcParam[i], "mode") == 0) {
+            uint8_t mode = atoi(pcValue[i]);
+            if (MODE_MAX > mode) {
+                config.data.mode = mode;
+                status.save = true;
+            }
+        } else if (strcmp(pcParam[i], "therm") == 0) {
+            config.data.therm = atoi(pcValue[i]);
+            status.save = true;
+        } else if (strcmp(pcParam[i], "timer1") == 0) {
+            strncpy(config.data.timer1, pcValue[i], sizeof(config.data.timer1));
+        } else if (strcmp(pcParam[i], "timer2") == 0) {
+            strncpy(config.data.timer2, pcValue[i], sizeof(config.data.timer2));
         }
     }
 
@@ -524,7 +519,7 @@ static const char* http_cgi_handler_basic(int iIndex, int iNumParams, char* pcPa
 /**
  * @brief mDNS Callback function to add text to a reply, called when generating the reply
  *
- * @param service mdns instance
+ * @param service mDNS instance
  * @param txt_userdata  user data (unused)
  */
 static void mdns_srv_txt(struct mdns_service* service, void* txt_userdata)
@@ -562,7 +557,7 @@ static bool dns_query_proc(const char* name, ip4_addr_t* addr)
 {
     static const ip4_addr_t ipaddr = INIT_IP4(192, 168, 4, 1);
 
-    printf("dns query: %s\n", name);
+    printf("DNS query: %s\n", name);
     *addr = ipaddr;
     return true;
 }
@@ -665,7 +660,7 @@ static void mqtt_connection_cb(mqtt_client_t* client, void* arg, mqtt_connection
 }
 
 /**
- * @brief Called when publish is complete either with sucess or failure
+ * @brief Called when publish is complete either with success or failure
  *
  * @param arg
  * @param result
@@ -691,24 +686,13 @@ void sntp_set_system_time_us(unsigned long sec, unsigned long us)
         .tv_sec = sec - NTP_DELTA - (config.data.tz * 60),
         .tv_usec = us
     };
-
     settimeofday(&tv, NULL);
 
-    struct tm* time = localtime(&tv.tv_sec);
-
-    datetime_t datetime = {
-        .year = (int16_t)(1900 + time->tm_year),
-        .month = (int8_t)(time->tm_mon + 1),
-        .day = (int8_t)time->tm_mday,
-        .hour = (int8_t)time->tm_hour,
-        .min = (int8_t)time->tm_min,
-        .sec = (int8_t)time->tm_sec,
-        .dotw = (int8_t)time->tm_wday,
+    struct timespec ts = {
+        .tv_sec = sec - NTP_DELTA - (config.data.tz * 60),
+        .tv_nsec = us * 1000,
     };
-
-    if (!rtc_set_datetime(&datetime)) {
-        printf("datetime error\n");
-    }
+    aon_timer_set_time(&ts);
 }
 
 /**
@@ -721,7 +705,7 @@ int main()
     while (status.run) {
         switch (status.state) {
         case ST_BOOT:
-            // Set progtram description
+            // Set program description
             bi_decl(bi_program_description(PROGRAM_NAME));
 
             // Needed to get the RP2040 chip talking with the wireless module
@@ -733,7 +717,7 @@ int main()
             // Load configuration from flash
             flash_config_load(&config);
 
-            // Initialize gpios
+            // Initialize GPIOs
             gpio_init(BTNA);
             gpio_set_dir(BTNA, GPIO_IN);
             gpio_pull_up(BTNA);
@@ -749,32 +733,44 @@ int main()
             gpio_pull_up(BTNC);
             gpio_set_irq_enabled_with_callback(BTNC, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
 
-            // Initiliazes ADC
+            // Initializes ADC
             adc_init();
             adc_set_temp_sensor_enabled(true);
             adc_select_input(4);
 
-            // Initiliaze the RTC
-            rtc_init();
+            // Initialize the AON timer
+            aon_timer_start_with_timeofday();
 
             // Initialise the display
+            uc8151_setup();
             uc8151_init();
             bm_init(uc8151_draw_bitmap);
 
             // Clear the display
             uc8151_clear();
 
-            // Attempt connect to wifi access point
+            // Initialize Wi-Fi
             if (cyw43_arch_init()) {
                 printf("Wi-Fi init failed");
                 status.state = ST_RESET;
                 break;
             }
 
-            // Connect to an access point
+            // Start web server
+            for (int i = 0; i < LWIP_ARRAYSIZE(http_ssi_tags); i++) {
+                LWIP_ASSERT("HTTP SSI tag too long for LWIP_HTTPD_MAX_TAG_NAME_LEN", strlen(http_ssi_tags[i]) <= LWIP_HTTPD_MAX_TAG_NAME_LEN);
+            }
+            httpd_init();
+            http_set_ssi_handler(http_ssi_handler, http_ssi_tags, LWIP_ARRAYSIZE(http_ssi_tags));
+            http_set_cgi_handlers(http_cgi_handlers, LWIP_ARRAYSIZE(http_cgi_handlers));
+
+        case ST_CONNECT:
+            // Attempt connect to Wi-Fi access point
+            printf("Connecting to AP\n");
+
             cyw43_arch_enable_sta_mode();
 
-            // Setup identifty
+            // Setup identify
             uint8_t* mac = cyw43_state.mac;
             snprintf(status.name, sizeof(status.name), PROGRAM_NAME "%d", mac[5] + (mac[4] << 8) + (mac[3] << 16));
             printf("name: %s\n", status.name);
@@ -788,7 +784,9 @@ int main()
 
         case ST_SETUP:
             // Access point not found, create access point for user to setup wifi
-            printf("Cannot find wifi, fallback to AP mode\n");
+            printf("Cannot find Wi-Fi, fallback to AP mode\n");
+
+            cyw43_arch_disable_sta_mode();
 
             // Create access point
             cyw43_arch_enable_ap_mode(status.name, NULL, CYW43_AUTH_OPEN);
@@ -807,14 +805,6 @@ int main()
                 break;
             }
 
-            // Start web server
-            for (int i = 0; i < LWIP_ARRAYSIZE(http_ssi_tags); i++) {
-                LWIP_ASSERT("HTTP SSI tag too long for LWIP_HTTPD_MAX_TAG_NAME_LEN", strlen(http_ssi_tags[i]) <= LWIP_HTTPD_MAX_TAG_NAME_LEN);
-            }
-            httpd_init();
-            http_set_ssi_handler(http_ssi_handler, http_ssi_tags, LWIP_ARRAYSIZE(http_ssi_tags));
-            http_set_cgi_handlers(http_cgi_handlers, LWIP_ARRAYSIZE(http_cgi_handlers));
-
             // Display title
             bmp_printf("/monospace.bmp", 0, 0, status.name);
 
@@ -829,14 +819,27 @@ int main()
             break;
 
         case ST_WAIT:
-            // wait for wifi settings
+            // wait for Wi-Fi settings
+            break;
+
+        case ST_RETRY:
+            // Configuration set, reconnect
+            printf("Configuration set, reconnecting\n");
+
+            cyw43_arch_disable_ap_mode();
+            dnserv_free();
+            dhserv_free();
+            status.state = ST_CONNECT;
             break;
 
         case ST_INIT:
-            // Access point found, start webserver and ntp
+            // Access point found, start web-server and NTP
             printf("Connected.\n");
 
-            // Print url
+            // low power Wi-Fi
+            CYW43_AGGRESSIVE_PM;
+
+            // Print URL
             uint32_t ip_addr = cyw43_state.netif[CYW43_ITF_STA].ip_addr.addr;
             snprintf(status.addr, sizeof(status.addr), "%lu.%lu.%lu.%lu", ip_addr & 0xFF, (ip_addr >> 8) & 0xFF, (ip_addr >> 16) & 0xFF, ip_addr >> 24);
             printf("IP Address: %s\n", status.addr);
@@ -845,22 +848,14 @@ int main()
             sntp_setoperatingmode(SNTP_OPMODE_POLL);
             sntp_init();
 
-            // Start web server
-            for (int i = 0; i < LWIP_ARRAYSIZE(http_ssi_tags); i++) {
-                LWIP_ASSERT("HTTP SSI tag too long for LWIP_HTTPD_MAX_TAG_NAME_LEN", strlen(http_ssi_tags[i]) <= LWIP_HTTPD_MAX_TAG_NAME_LEN);
-            }
-            httpd_init();
-            http_set_ssi_handler(http_ssi_handler, http_ssi_tags, LWIP_ARRAYSIZE(http_ssi_tags));
-            http_set_cgi_handlers(http_cgi_handlers, LWIP_ARRAYSIZE(http_cgi_handlers));
-
-            // Start bonjour
+            // Start mDNS
             mdns_resp_register_name_result_cb(mdns_report);
             mdns_resp_init();
             mdns_resp_add_netif(netif_default, status.name);
             mdns_resp_add_service(netif_default, status.name, "_http", DNSSD_PROTO_TCP, 80, mdns_srv_txt, NULL);
             mdns_resp_announce(netif_default);
 
-            // Start mqtt
+            // Start MQTT
             if (NULL == (mqtt_client = mqtt_client_new())) {
                 printf("MQTT allocation failed\n");
                 status.state = ST_RESET;
@@ -876,8 +871,11 @@ int main()
             // Detect button presses
             if (status.btna & EDGE_FALL) {
                 config.data.therm++;
+                if (!status.save) {
+                    uc8151_init();
+                    uc8151_clear();
+                }
                 status.save = true;
-                uc8151_clear();
                 bmp_printf("/monospace.bmp", 96, 32, "%dC", config.data.therm);
                 uc8151_refresh();
             }
@@ -889,6 +887,10 @@ int main()
             if (status.btnb & EDGE_RISE) {
                 status.btnb = 0;
                 config.data.mode = (config.data.mode + 1) % MODE_MAX;
+                if (!status.save) {
+                    uc8151_init();
+                    uc8151_clear();
+                }
                 status.save = true;
                 switch (config.data.mode) {
                 case MODE_OFF:
@@ -909,8 +911,11 @@ int main()
 
             if (status.btnc & EDGE_FALL) {
                 config.data.therm--;
+                if (!status.save) {
+                    uc8151_init();
+                    uc8151_clear();
+                }
                 status.save = true;
-                uc8151_clear();
                 bmp_printf("/monospace.bmp", 96, 32, "%dC", config.data.therm);
                 uc8151_refresh();
             }
@@ -920,16 +925,20 @@ int main()
             }
 
             // Update every 1 min
-            datetime_t datetime;
-            if (rtc_get_datetime(&datetime)) {
+            struct timespec ts;
+            aon_timer_get_time(&ts);
+            struct tm* time = localtime(&ts.tv_sec);
+            if (time) {
                 static int8_t min = 100;
-                if (datetime.min != min) {
-                    min = datetime.min;
+                if (time->tm_min != min) {
+                    min = time->tm_min;
 
                     // Save configuration in flash
                     if (status.save) {
                         status.save = false;
                         flash_config_save(&config);
+                    } else {
+                        uc8151_init();
                     }
 
                     // Clear the Display
@@ -943,8 +952,8 @@ int main()
                     bm_qr_printf(0, 32, "http://%s", status.addr);
 
                     // Display time
-                    bmp_printf("/monospace.bmp", 96, 64, "%02d:%02d", datetime.hour, datetime.min);
-                    snprintf(status.time, sizeof(status.time), "%02d:%02d", datetime.hour, datetime.min);
+                    bmp_printf("/monospace.bmp", 96, 64, "%02d:%02d", time->tm_hour, time->tm_min);
+                    snprintf(status.time, sizeof(status.time), "%02d:%02d", time->tm_hour, time->tm_min);
 
                     // Read temperature
                     status.temp = 27.0f - (((float)adc_read() * 3.3f / 4096) - 0.706f) / 0.001721f;
@@ -965,7 +974,7 @@ int main()
                         sscanf(config.data.timer1, "%d:%d", &starthour, &startmin);
                         sscanf(config.data.timer2, "%d:%d", &endhour, &endmin);
 
-                        status.out = (starthour * 60 + startmin >= datetime.hour * 60 + datetime.min) && (endhour * 60 + endmin <= datetime.hour * 60 + datetime.min) && (config.data.therm < status.temp);
+                        status.out = (starthour * 60 + startmin >= time->tm_hour * 60 + time->tm_min) && (endhour * 60 + endmin <= time->tm_hour * 60 + time->tm_min) && (config.data.therm < status.temp);
                         bmp_draw("/clock.bmp", UC8151_WIDTH - 32, 48);
                         break;
                     case MODE_ON:
@@ -1018,6 +1027,9 @@ int main()
 
                     // Update display
                     uc8151_refresh();
+
+                    // power down display
+                    uc8151_sleep();
                 }
             }
             break;
@@ -1032,9 +1044,6 @@ int main()
                 mqtt_disconnect(mqtt_client);
             }
 
-            dnserv_free();
-            dhserv_free();
-
             uc8151_sleep();
 
             cyw43_arch_deinit();
@@ -1048,7 +1057,10 @@ int main()
             status.state = ST_RESET;
         }
 
+        // keep alive
         watchdog_update();
+
+        // low power sleep
         sleep_ms(POLL_INTERVAL);
     }
 

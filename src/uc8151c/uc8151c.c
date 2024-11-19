@@ -24,52 +24,54 @@
 
 /* MACROS ****************************************/
 
-#define UC8151_SPI_PORT spi0
+#define UC8151_SPI_PORT (spi0)
+
+/* TYPES ****************************************/
 
 /*
  * Command registers available from the manufacturer documentation
  */
-#define UC8151_PANEL_SETTING 0x00
-#define UC8151_POWER_SETTING 0x01
-#define UC8151_POWER_OFF 0x02
-#define UC8151_POWER_OFF_SEQUENCE_SETTING 0x03
-#define UC8151_POWER_ON 0x04
-#define UC8151_POWER_ON_MEASURE 0x05
-#define UC8161_BOOSTER_SOFT_START 0x06
-#define UC8151_DEEP_SLEEP 0x07
-#define UC8151_DATA_START_TRANSMISSION_1 0x10
-#define UC8151_DATA_STOP 0x11
-#define UC8151_DISPLAY_REFRESH 0x12
-#define UC8151_DATA_START_TRANSMISSION_2 0x13
-#define UC8151_PLL_CONTROL 0x30
-#define UC8151_TEMPERATURE_SENSOR_COMMAND 0x40
-#define UC8151_TEMPERATURE_SENSOR_CALIBRATION 0x41
-#define UC8151_TEMPERATURE_SENSOR_WRITE 0x42
-#define UC8151_TEMPERATURE_SENSOR_READ 0x43
-#define UC8151_VCOM_AND_DATA_INTERVAL_SETTING 0x50
-#define UC8151_LOW_POWER_DETECTION 0x51
-#define UC8151_TCON_SETTING 0x60
-#define UC8151_TCON_RESOLUTION 0x61
-#define UC8151_SOURCE_AND_GATE_START_SETTING 0x62
-#define UC8151_GET_STATUS 0x71
-#define UC8151_AUTO_MEASURE_VCOM 0x80
-#define UC8151_VCOM_VALUE 0x81
-#define UC8151_VCM_DC_SETTING_REGISTER 0x82
-#define UC8151_PARTIAL_WINDOW 0x90
-#define UC8151_PARTIAL_IN 0x91
-#define UC8151_PARTIAL_OUT 0x92
-#define UC8151_PROGRAM_MODE 0xA0
-#define UC8151_ACTIVE_PROGRAMMING 0xA1
-#define UC8151_READ_OTP 0xA2
-#define UC8151_POWER_SAVING 0xE3
-
-/* TYPES ****************************************/
+enum uc8151_reg {
+    UC8151_PANEL_SETTING = 0x00,
+    UC8151_POWER_SETTING = 0x01,
+    UC8151_POWER_OFF = 0x02,
+    UC8151_POWER_OFF_SEQUENCE_SETTING = 0x03,
+    UC8151_POWER_ON = 0x04,
+    UC8151_POWER_ON_MEASURE = 0x05,
+    UC8161_BOOSTER_SOFT_START = 0x06,
+    UC8151_DEEP_SLEEP = 0x07,
+    UC8151_DATA_START_TRANSMISSION_1 = 0x10,
+    UC8151_DATA_STOP = 0x11,
+    UC8151_DISPLAY_REFRESH = 0x12,
+    UC8151_DATA_START_TRANSMISSION_2 = 0x13,
+    UC8151_PLL_CONTROL = 0x30,
+    UC8151_TEMPERATURE_SENSOR_COMMAND = 0x40,
+    UC8151_TEMPERATURE_SENSOR_CALIBRATION = 0x41,
+    UC8151_TEMPERATURE_SENSOR_WRITE = 0x42,
+    UC8151_TEMPERATURE_SENSOR_READ = 0x43,
+    UC8151_VCOM_AND_DATA_INTERVAL_SETTING = 0x50,
+    UC8151_LOW_POWER_DETECTION = 0x51,
+    UC8151_TCON_SETTING = 0x60,
+    UC8151_TCON_RESOLUTION = 0x61,
+    UC8151_SOURCE_AND_GATE_START_SETTING = 0x62,
+    UC8151_GET_STATUS = 0x71,
+    UC8151_AUTO_MEASURE_VCOM = 0x80,
+    UC8151_VCOM_VALUE = 0x81,
+    UC8151_VCM_DC_SETTING_REGISTER = 0x82,
+    UC8151_PARTIAL_WINDOW = 0x90,
+    UC8151_PARTIAL_IN = 0x91,
+    UC8151_PARTIAL_OUT = 0x92,
+    UC8151_PROGRAM_MODE = 0xA0,
+    UC8151_ACTIVE_PROGRAMMING = 0xA1,
+    UC8151_READ_OTP = 0xA2,
+    UC8151_POWER_SAVING = 0xE3
+};
 
 /**
  * @brief Interface pins with our standard defaults where appropriate
  *
  */
-enum Pin {
+enum pin {
     A = 12,
     B = 13,
     C = 14,
@@ -161,10 +163,10 @@ static void uc8151_busy_wait()
 /* GLOBAL FUCNTIONS ****************************************/
 
 /**
- * @brief Initialise the UC8151C controller to begin the display.
+ * @brief Setup ports for UC8151C
  *
  */
-void uc8151_init()
+void uc8151_setup()
 {
     // configure spi interface and pins
     spi_init(spi, 12000000);
@@ -189,7 +191,14 @@ void uc8151_init()
 
     gpio_set_function(CLK, GPIO_FUNC_SPI);
     gpio_set_function(MOSI, GPIO_FUNC_SPI);
+}
 
+/**
+ * @brief Initialise the UC8151C controller to begin the display.
+ *
+ */
+void uc8151_init()
+{
     uc8151_reset();
 
     uc8151_write(UC8161_BOOSTER_SOFT_START, (uint8_t[]) { 0x17, 0x17, 0x17 }, 3);
@@ -324,8 +333,8 @@ void uc8151_update(uint8_t* data)
 
 /**
  * @brief Puts the data in RAM on to the display.
- * @brief Puts the data in RAM on to the display. 
- * (Refreshes the display)
+ *
+ * Refreshes the display
  */
 void uc8151_refresh()
 {
@@ -336,7 +345,7 @@ void uc8151_refresh()
 
 /**
  * @brief Put the display to sleep.
- * 
+ *
  * Wake the device using uc8151_init()
  */
 void uc8151_sleep()
@@ -344,4 +353,7 @@ void uc8151_sleep()
     uc8151_write(UC8151_POWER_OFF, NULL, 0);
     uc8151_busy_wait();
     uc8151_write(UC8151_DEEP_SLEEP, (uint8_t[]) { 0xA5 }, 1);
+    uc8151_busy_wait();
+    gpio_put(CS, 0);
+    gpio_put(DC, 0);
 }

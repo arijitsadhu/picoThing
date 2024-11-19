@@ -35,9 +35,9 @@ target_include_directories(${PROGRAM_NAME}
 target_link_libraries(${PROGRAM_NAME}
     hardware_adc
     hardware_gpio
-    hardware_rtc
     hardware_spi
     hardware_watchdog
+    pico_aon_timer
     pico_cyw43_arch_lwip_threadsafe_background
     pico_lwip_http
     pico_lwip_mdns
