@@ -231,8 +231,16 @@
                 <input type="hidden" name="tz" />
                 <input type="hidden" name="time" />
                 <p>
-                    <label for="setMqttServer">MQTT Server IP Address</label><br />
-                    <input type="text" id="setMqttServer" name="mqtt_ip" minlength="7" maxlength="39" size="15" />
+                    <label for="setMqttServer">MQTT Address</label><br />
+                    <input type="text" id="setMqttServer" name="mqttaddr" maxlength="39" size="15" />
+                </p>
+                <p>
+                    <label for="setMqttUsername">MQTT User Name</label><br />
+                    <input type="text" id="setMqttUsername" name="mqttusr" maxlength="39" size="15" />
+                </p>
+                <p>
+                    <label for="setMqttPassword">MQTT Password</label><br />
+                    <input type="password" id="setMqttPassword" name="mqttpwd" maxlength="39" size="15" />
                 </p>
                 <P><input type="submit" value="Set" /></P>
             </form>
@@ -289,7 +297,8 @@
         document.settings.therm.value = data.therm;
         document.settings.timer1.value = data.timer1;
         document.settings.timer2.value = data.timer2;
-        document.mqtt.mqtt_ip.value = data.mqtt_ip;
+        document.mqtt.mqttaddr.value = data.mqttaddr;
+        document.mqtt.mqttusr.value = data.mqttusr;
 
         if (data.out) {
             document.getElementById("outOn").classList.remove("hide");

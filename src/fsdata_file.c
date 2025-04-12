@@ -27,4 +27,4 @@ const struct fsdata_file file_302_html[] = { { file_404_html, data_302_html, dat
 
 #undef FS_NUMFILES
 
-#define FS_NUMFILES (NUMFILES + 1)
+#define FS_NUMFILES (NUMFILES + 2)

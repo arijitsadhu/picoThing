@@ -22,6 +22,7 @@
 #include "lwip/apps/mdns.h"
 #include "lwip/apps/mqtt.h"
 #include "lwip/apps/sntp.h"
+#include "lwip/dns.h"
 #include "pico/aon_timer.h"
 #include "pico/binary_info.h"
 #include "pico/cyw43_arch.h"
@@ -35,6 +36,12 @@
 #include "uc8151c.h"
 
 /* MACROS ****************************************/
+
+/**
+ * @brief Manufacturer name displayed in Home Assistant
+ *
+ */
+#define MQTT_MANUFACTURER PROGRAM_NAME
 
 /**
  * @brief Wi-Fi connection timeout in ms
@@ -74,11 +81,6 @@
  */
 #define NTP_DELTA (2208988800)
 
-#define INIT_IP4(a, b, c, d)               \
-    {                                      \
-        PP_HTONL(LWIP_MAKEU32(a, b, c, d)) \
-    }
-
 // button GPIO mappings
 #define BTNA (12)
 #define BTNB (13)
@@ -90,6 +92,8 @@
 #define EDGE_FALL (0x4)
 #define EDGE_RISE (0x8)
 
+// helpers
+#define INIT_IP4(a, b, c, d) { PP_HTONL(LWIP_MAKEU32(a, b, c, d)) }
 #define TOUPPER(c) (((c >= 'a') && (c <= 'z')) ? (c - ('a' - 'A')) : (c))
 #define HEXNUMBER(c) ((((c) < '0') || ((c) > 'F') || (((c) > '9') && ((c) < 'A'))) ? 0 : ((c) >= 'A') ? ((c) - ('0' + 7)) \
                                                                                                       : ((c) - '0'))
@@ -133,7 +137,8 @@ typedef enum {
     TAG_NAME = 0,
     TAG_ADDR,
     TAG_TIME,
-    TAG_MQTT_IP,
+    TAG_MQTTADDR,
+    TAG_MQTTUSR,
     TAG_SETUP,
     TAG_MODE,
     TAG_TEMP,
@@ -149,7 +154,7 @@ typedef enum {
  *
  */
 typedef enum {
-    TOPIC_MODE = 0,
+    TOPIC_SWITCH = 0,
     TOPIC_MAX
 } mqtt_topics_t;
 
@@ -163,7 +168,9 @@ typedef union {
         char ssid[33]; ///< Wi-Fi SSID
         char pass[65]; ///< Wi-Fi Password
         int tz; ///< Time-zone in minutes
-        char mqtt_ip[40]; ///< MQTT IP Address
+        char mqttaddr[40]; ///< MQTT IP Address
+        char mqttusr[40]; ///< MQTT user name
+        char mqttpwd[40]; ///< MQTT password
         modes_t mode; ///< User mode
         int8_t therm; ///< Thermostat temperature in C
         char timer1[6]; ///< Thermostat start time
@@ -185,6 +192,7 @@ typedef struct {
     char time[10]; ///< Current displayed time
     bool mqtt_con; ///< MQTT connected to server
     mqtt_topics_t mqtt_topic; ///< Last MQTT received publish topic
+    char mqtt_topic_switch_set[64];
     float temp; ///< Current temperature
     uint32_t btna; ///< Button A state
     uint32_t btnb; ///< Button B state
@@ -216,7 +224,9 @@ static config_t config = {
         .ssid = WIFI_SSID,
         .pass = WIFI_PASSWORD,
         .tz = 0,
-        .mqtt_ip = "",
+        .mqttaddr = "homeassistant.local",
+        .mqttusr = "",
+        .mqttpwd = "",
         .mode = 0,
         .therm = 20,
         .timer1 = "00:00",
@@ -279,7 +289,8 @@ static const char* __not_in_flash("httpd") http_ssi_tags[] = {
     [TAG_NAME] = "name",
     [TAG_ADDR] = "addr",
     [TAG_TIME] = "time",
-    [TAG_MQTT_IP] = "mqtt_ip",
+    [TAG_MQTTADDR] = "mqttaddr",
+    [TAG_MQTTUSR] = "mqttusr",
     [TAG_SETUP] = "setup",
     [TAG_MODE] = "mode",
     [TAG_TEMP] = "temp",
@@ -303,7 +314,7 @@ static const tCGI http_cgi_handlers[] = {
  *
  */
 static const char* __not_in_flash("mqtt") mqtt_topics[] = {
-    [TOPIC_MODE] = "mode",
+    [TOPIC_SWITCH] = status.mqtt_topic_switch_set,
 };
 
 /**
@@ -346,7 +357,7 @@ static void flash_config_load(config_t* config)
  * @param gpio GPIO number
  * @param events event type
  */
-static void gpio_callback(uint gpio, uint32_t events)
+static void gpio_cb(uint gpio, uint32_t events)
 {
     if (BTNA == gpio) {
         status.btna = events;
@@ -382,10 +393,10 @@ static void http_cgi_urldecode(char* text)
     char c;
     int val;
 
-    while ((c = *ptr) != '\0') {
-        if (c == '+') {
+    while ('\0' != (c = *ptr)) {
+        if ('+' == c) {
             *text = ' ';
-        } else if (c == '%') {
+        } else if ('%' == c) {
             c = *(++ptr);
             c = TOUPPER(c);
             val = (HEXNUMBER(c) << 4);
@@ -426,8 +437,11 @@ static u16_t __time_critical_func(http_ssi_handler)(int iIndex, char* pcInsert, 
     case TAG_SETUP:
         printed = snprintf(pcInsert, iInsertLen, ST_RUN == status.state ? "false" : "true");
         break;
-    case TAG_MQTT_IP:
-        printed = snprintf(pcInsert, iInsertLen, "%s", config.data.mqtt_ip);
+    case TAG_MQTTADDR:
+        printed = snprintf(pcInsert, iInsertLen, "%s", config.data.mqttaddr);
+        break;
+    case TAG_MQTTUSR:
+        printed = snprintf(pcInsert, iInsertLen, "%s", config.data.mqttusr);
         break;
     case TAG_MODE:
         printed = snprintf(pcInsert, iInsertLen, "%d", config.data.mode);
@@ -466,18 +480,18 @@ static const char* http_cgi_handler_basic(int iIndex, int iNumParams, char* pcPa
 
     for (int i = 0; i < iNumParams; i++) {
         http_cgi_urldecode(pcValue[i]);
-        if (strcmp(pcParam[i], "ssid") == 0) {
-            strncpy(config.data.ssid, pcValue[i], sizeof(config.data.ssid));
+        if (0 == strcmp(pcParam[i], "ssid")) {
+            strncpy(config.data.ssid, pcParam[i], sizeof(config.data.ssid));
             status.state = ST_RETRY;
             status.save = true;
-        } else if (strcmp(pcParam[i], "pass") == 0) {
+        } else if (0 == strcmp(pcParam[i], "pass")) {
             strncpy(config.data.pass, pcValue[i], sizeof(config.data.pass));
             status.state = ST_RETRY;
             status.save = true;
-        } else if (strcmp(pcParam[i], "tz") == 0) {
+        } else if (0 == strcmp(pcParam[i], "tz")) {
             config.data.tz = atoi(pcValue[i]);
             status.save = true;
-        } else if (strcmp(pcParam[i], "time") == 0) {
+        } else if (0 == strcmp(pcParam[i], "time")) {
             time_t now = atoi(pcValue[i]);
 
             struct timeval tv = {
@@ -489,25 +503,42 @@ static const char* http_cgi_handler_basic(int iIndex, int iNumParams, char* pcPa
                 .tv_sec = now
             };
             aon_timer_set_time(&ts);
-        } else if (strcmp(pcParam[i], "mqtt_ip") == 0) {
-            strncpy(config.data.mqtt_ip, pcValue[i], sizeof(config.data.mqtt_ip));
+        } else if (0 == strcmp(pcParam[i], "mqttaddr")) {
+            strncpy(config.data.mqttaddr, pcValue[i], sizeof(config.data.mqttaddr));
             // force reconnection
             if (status.mqtt_con) {
                 mqtt_disconnect(mqtt_client);
                 status.mqtt_con = false;
             }
-        } else if (strcmp(pcParam[i], "mode") == 0) {
+            status.save = true;
+        } else if (0 == strcmp(pcParam[i], "mqttusr")) {
+            strncpy(config.data.mqttusr, pcValue[i], sizeof(config.data.mqttusr));
+            // force reconnection
+            if (status.mqtt_con) {
+                mqtt_disconnect(mqtt_client);
+                status.mqtt_con = false;
+            }
+            status.save = true;
+        } else if (0 == strcmp(pcParam[i], "mqttpwd")) {
+            strncpy(config.data.mqttpwd, pcValue[i], sizeof(config.data.mqttpwd));
+            // force reconnection
+            if (status.mqtt_con) {
+                mqtt_disconnect(mqtt_client);
+                status.mqtt_con = false;
+            }
+            status.save = true;
+        } else if (0 == strcmp(pcParam[i], "mode")) {
             uint8_t mode = atoi(pcValue[i]);
             if (MODE_MAX > mode) {
                 config.data.mode = mode;
                 status.save = true;
             }
-        } else if (strcmp(pcParam[i], "therm") == 0) {
+        } else if (0 == strcmp(pcParam[i], "therm")) {
             config.data.therm = atoi(pcValue[i]);
             status.save = true;
-        } else if (strcmp(pcParam[i], "timer1") == 0) {
+        } else if (0 == strcmp(pcParam[i], "timer1")) {
             strncpy(config.data.timer1, pcValue[i], sizeof(config.data.timer1));
-        } else if (strcmp(pcParam[i], "timer2") == 0) {
+        } else if (0 == strcmp(pcParam[i], "timer2")) {
             strncpy(config.data.timer2, pcValue[i], sizeof(config.data.timer2));
         }
     }
@@ -571,11 +602,13 @@ static bool dns_query_proc(const char* name, ip4_addr_t* addr)
  */
 static void mqtt_incoming_publish_cb(void* arg, const char* topic, u32_t tot_len)
 {
+    (void)arg;
+
     printf("Incoming publish at topic %s with total length %u\n", topic, (unsigned int)tot_len);
 
     // Decode topic string into a user defined reference
-    if (0 == strcmp(topic, mqtt_topics[TOPIC_MODE])) {
-        status.mqtt_topic = TOPIC_MODE;
+    if (0 == strcmp(topic, mqtt_topics[TOPIC_SWITCH])) {
+        status.mqtt_topic = TOPIC_SWITCH;
     } else {
         status.mqtt_topic = TOPIC_MAX;
     }
@@ -591,6 +624,8 @@ static void mqtt_incoming_publish_cb(void* arg, const char* topic, u32_t tot_len
  */
 static void mqtt_incoming_data_cb(void* arg, const u8_t* data, u16_t len, u8_t flags)
 {
+    (void)arg;
+
     printf("Incoming publish payload with length %d, flags %u\n", len, (unsigned int)flags);
 
     if (flags & MQTT_DATA_FLAG_LAST) {
@@ -599,15 +634,21 @@ static void mqtt_incoming_data_cb(void* arg, const u8_t* data, u16_t len, u8_t f
 
         // Call function or do action depending on reference, in this case inpub_id
         switch (status.mqtt_topic) {
-        case TOPIC_MODE:
-            uint8_t mode = atoi(data);
-            if (MODE_MAX > mode) {
-                config.data.mode = mode;
-            }
+        case TOPIC_SWITCH:
             // Don't trust the publisher, check zero termination
-            if (data[len - 1] == 0) {
+            if ('\0' == data[len - 1]) {
                 printf("mqtt_incoming_data_cb: %s\n", (const char*)data);
             }
+
+            if (0 == memcmp(data, "ON", 2)) {
+                config.data.mode = MODE_ON;
+            } else if (0 == memcmp(data, "OFF", 3)) {
+                config.data.mode = MODE_OFF;
+            } else {
+                config.data.mode = MODE_AUTO;
+            }
+            //  don't need to save as it will be controlled remotely
+
             break;
 
         default:
@@ -630,33 +671,9 @@ static void mqtt_incoming_data_cb(void* arg, const u8_t* data, u16_t len, u8_t f
  */
 static void mqtt_sub_request_cb(void* arg, err_t result)
 {
+    (void)arg;
+
     printf("Subscribe result: %d\n", result);
-}
-
-/**
- * @brief connection status callback
- *
- * @param client
- * @param arg
- * @param status
- */
-static void mqtt_connection_cb(mqtt_client_t* client, void* arg, mqtt_connection_status_t connection_status)
-{
-    if (connection_status == MQTT_CONNECT_ACCEPTED) {
-        printf("mqtt_connection_cb: Successfully connected\n");
-        status.mqtt_con = true;
-
-        // Setup callback for incoming publish requests
-        mqtt_set_inpub_callback(client, mqtt_incoming_publish_cb, mqtt_incoming_data_cb, arg);
-
-        // Subscribe to a topic named "mode" with QoS level 1, call mqtt_sub_request_cb with result
-        if (ERR_OK != mqtt_subscribe(client, "mode", 1, mqtt_sub_request_cb, arg)) {
-            printf("mqtt_subscribe failed\n");
-        }
-    } else {
-        status.mqtt_con = false;
-        printf("mqtt_connection_cb: Disconnected, reason: %d\n", connection_status);
-    }
 }
 
 /**
@@ -669,6 +686,82 @@ static void mqtt_pub_request_cb(void* arg, err_t result)
 {
     if (ERR_OK != result) {
         printf("Publish result: %d\n", result);
+    }
+}
+
+/**
+ * @brief connection status callback
+ *
+ * @param client
+ * @param arg
+ * @param status
+ */
+static void mqtt_connection_cb(mqtt_client_t* client, void* arg, mqtt_connection_status_t connection_status)
+{
+    if (connection_status == MQTT_CONNECT_ACCEPTED) {
+        char topic[64] = "";
+        char payload[512] = "";
+
+        printf("mqtt_connection_cb: Successfully connected\n");
+        status.mqtt_con = true;
+
+        // Setup callback for incoming publish requests
+        mqtt_set_inpub_callback(client, mqtt_incoming_publish_cb, mqtt_incoming_data_cb, arg);
+
+        // Subscribe to a topic with QoS level 1, call mqtt_sub_request_cb with result
+        if (ERR_OK != mqtt_subscribe(client, status.mqtt_topic_switch_set, 1, mqtt_sub_request_cb, arg)) {
+            printf("mqtt_subscribe failed\n");
+        }
+
+        // Publish config
+        snprintf(topic, sizeof(topic), "homeassistant/sensor/%s/config", status.name);
+        snprintf(payload, sizeof(payload), "{ \"device_class\":\"temperature\", \"state_topic\":\"homeassistant/sensor/%s/state\", \"unit_of_measurement\":\"°C\", \"value_template\":\"{{ value_json.temperature}}\", \"unique_id\":\"temp_%s\", \"device\":{ \"identifiers\":[ \"%s\" ], \"name\":\"%s\", \"manufacturer\": \"%s\", \"model\": \"%s\", \"configuration_url\": \"http://%s\" } }", status.name, status.name, status.name, status.name, MQTT_MANUFACTURER, PROGRAM_NAME, status.addr);
+        if (ERR_OK != mqtt_publish(mqtt_client, topic, payload, strlen(payload), 0, 0, mqtt_pub_request_cb, NULL)) {
+            printf("Publish failed\n");
+        }
+        snprintf(topic, sizeof(topic), "homeassistant/switch/%s/config", status.name);
+        snprintf(payload, sizeof(payload), "{ \"name\":\"Switch\", \"command_topic\":\"homeassistant/switch/%s/set\", \"state_topic\":\"homeassistant/switch/%s/state\", \"unique_id\":\"sw_%s\", \"device\":{ \"identifiers\":[ \"%s\" ], \"name\":\"%s\", \"manufacturer\": \"%s\", \"model\": \"%s\", \"configuration_url\": \"http://%s\" } }", status.name, status.name, status.name, status.name, status.name, MQTT_MANUFACTURER, PROGRAM_NAME, status.addr);
+        if (ERR_OK != mqtt_publish(mqtt_client, topic, payload, strlen(payload), 0, 0, mqtt_pub_request_cb, NULL)) {
+            printf("Publish failed\n");
+        }
+
+    } else {
+        status.mqtt_con = false;
+        printf("mqtt_connection_cb: Disconnected, reason: %d\n", connection_status);
+    }
+}
+
+/**
+ * @brief Callback which is invoked when a hostname is found.
+ *
+ * @param name name query dns name
+ * @param addr addr return ip address
+ * @param arg a user-specified callback argument passed to dns_gethostbyname
+ */
+static void dns_found_cb(const char* name, const ip_addr_t* ipaddr, void* arg)
+{
+    (void)arg;
+
+    struct mqtt_connect_client_info_t ci = {
+        .client_id = status.name,
+    };
+
+    if ('\0' != config.data.mqttusr[0]) {
+        ci.client_user = config.data.mqttusr;
+    }
+
+    if ('\0' != config.data.mqttpwd[0]) {
+        ci.client_pass = config.data.mqttpwd;
+    }
+
+    printf("%s found in IP Address: %lu.%lu.%lu.%lu\n", name, ipaddr->addr & 0xFF, (ipaddr->addr >> 8) & 0xFF, (ipaddr->addr >> 16) & 0xFF, ipaddr->addr >> 24);
+
+    // Initiate client and connect to server, if this fails immediately an error code is returned
+    // otherwise mqtt_connection_cb will be called with connection result after attempting
+    // to establish a connection with the server.
+    // For now MQTT version 3.1.1 is always used
+    if (ERR_OK != mqtt_client_connect(mqtt_client, ipaddr, MQTT_PORT, mqtt_connection_cb, NULL, &ci)) {
+        printf("MQTT client connect failed\n");
     }
 }
 
@@ -721,17 +814,17 @@ int main()
             gpio_init(BTNA);
             gpio_set_dir(BTNA, GPIO_IN);
             gpio_pull_up(BTNA);
-            gpio_set_irq_enabled_with_callback(BTNA, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+            gpio_set_irq_enabled_with_callback(BTNA, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &gpio_cb);
 
             gpio_init(BTNB);
             gpio_set_dir(BTNB, GPIO_IN);
             gpio_pull_up(BTNB);
-            gpio_set_irq_enabled_with_callback(BTNB, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+            gpio_set_irq_enabled_with_callback(BTNB, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &gpio_cb);
 
             gpio_init(BTNC);
             gpio_set_dir(BTNC, GPIO_IN);
             gpio_pull_up(BTNC);
-            gpio_set_irq_enabled_with_callback(BTNC, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &gpio_callback);
+            gpio_set_irq_enabled_with_callback(BTNC, GPIO_IRQ_EDGE_RISE | GPIO_IRQ_EDGE_FALL, true, &gpio_cb);
 
             // Initializes ADC
             adc_init();
@@ -764,16 +857,19 @@ int main()
             http_set_ssi_handler(http_ssi_handler, http_ssi_tags, LWIP_ARRAYSIZE(http_ssi_tags));
             http_set_cgi_handlers(http_cgi_handlers, LWIP_ARRAYSIZE(http_cgi_handlers));
 
+            status.state = ST_CONNECT;
+
         case ST_CONNECT:
             // Attempt connect to Wi-Fi access point
             printf("Connecting to AP\n");
 
             cyw43_arch_enable_sta_mode();
 
-            // Setup identify
+            // Setup identity
             uint8_t* mac = cyw43_state.mac;
             snprintf(status.name, sizeof(status.name), PROGRAM_NAME "%d", mac[5] + (mac[4] << 8) + (mac[3] << 16));
             printf("name: %s\n", status.name);
+            snprintf(status.mqtt_topic_switch_set, sizeof(status.mqtt_topic_switch_set), "homeassistant/switch/%s/set", status.name);
 
             if (cyw43_arch_wifi_connect_timeout_ms(config.data.ssid, config.data.pass, CYW43_AUTH_WPA2_MIXED_PSK, WIFI_TIMEOUT)) {
                 status.state = ST_SETUP;
@@ -816,7 +912,6 @@ int main()
             uc8151_refresh();
 
             status.state = ST_WAIT;
-            break;
 
         case ST_WAIT:
             // wait for Wi-Fi settings
@@ -863,7 +958,6 @@ int main()
             }
 
             status.state = ST_RUN;
-            break;
 
         case ST_RUN:
             // Normal operation poll every second
@@ -994,34 +1088,26 @@ int main()
                         uc8151_fill_rectangle(UC8151_WIDTH - 32, 88, UC8151_WIDTH, 120, 0xff);
                     }
 
-                    // MQTT reconnect
-                    if (!status.mqtt_con) {
-                        ip_addr_t mqtt_server_address;
-                        if (ipaddr_aton(config.data.mqtt_ip, &mqtt_server_address)) {
-                            struct mqtt_connect_client_info_t ci = {
-                                .client_id = status.name
-                            };
-
-                            // Initiate client and connect to server, if this fails immediately an error code is returned
-                            // otherwise mqtt_connection_cb will be called with connection result after attempting
-                            // to establish a connection with the server.
-                            // For now MQTT version 3.1.1 is always used
-                            if (ERR_OK != mqtt_client_connect(mqtt_client, &mqtt_server_address, MQTT_PORT, mqtt_connection_cb, NULL, &ci)) {
-                                printf("MQTT client connect failed\n");
-                            }
-                        }
-                    }
-
-                    // MQTT Publish
+                    // MQTT
                     if (status.mqtt_con) {
-                        char payload[5] = "";
-                        sprintf(payload, "%.01f", status.temp);
-                        if (ERR_OK != mqtt_publish(mqtt_client, "temperature", payload, strlen(payload), 2, 0, mqtt_pub_request_cb, NULL)) {
+                        // Publish
+                        char topic[64] = "";
+                        char payload[32] = "";
+                        snprintf(topic, sizeof(topic), "homeassistant/sensor/%s/state", status.name);
+                        snprintf(payload, sizeof(payload), "{ \"temperature\": %.01f }", status.temp);
+                        if (ERR_OK != mqtt_publish(mqtt_client, topic, payload, strlen(payload), 0, 0, mqtt_pub_request_cb, NULL)) {
                             printf("Publish failed\n");
                         }
-                        sprintf(payload, status.out ? "on" : "off");
-                        if (ERR_OK != mqtt_publish(mqtt_client, "output", payload, strlen(payload), 2, 0, mqtt_pub_request_cb, NULL)) {
+                        snprintf(topic, sizeof(topic), "homeassistant/switch/%s/state", status.name);
+                        snprintf(payload, sizeof(payload), status.out ? "ON" : "OFF");
+                        if (ERR_OK != mqtt_publish(mqtt_client, topic, payload, strlen(payload), 0, 0, mqtt_pub_request_cb, NULL)) {
                             printf("Publish failed\n");
+                        }
+                    } else {
+                        // Reconnect
+                        ip_addr_t mqtt_server_address = {};
+                        if (ERR_OK == dns_gethostbyname(config.data.mqttaddr, &mqtt_server_address, dns_found_cb, NULL)) {
+                            dns_found_cb(config.data.mqttaddr, &mqtt_server_address, NULL);
                         }
                     }
 
@@ -1042,7 +1128,10 @@ int main()
 
             if (status.mqtt_con) {
                 mqtt_disconnect(mqtt_client);
+                status.mqtt_con = false;
             }
+            mqtt_client_free(mqtt_client);
+            mqtt_client = NULL;
 
             uc8151_sleep();
 

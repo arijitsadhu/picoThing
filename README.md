@@ -11,7 +11,7 @@ Objective of this project is to be a template for simple IOT projects with the p
 * Built in web server with web UI
 * Bonjour (mDNS) access
 * SNTP time with RTC (AON Timer)
-* MQTT
+* MQTT Home Assistant Integration
 * QR code to display Access point and then URL of the device
 * Configuration storage in flash
 * Unique naming from mac address
@@ -179,7 +179,6 @@ Use the following string to create a font:
 
 ## TODO
 * Low power with suspend and RTC.
-* Home Assistant Integration.
 * Code tree restructuring for builds with other devices like sensors, actuators etc.
 
 ## References
@@ -194,3 +193,4 @@ Use the following string to create a font:
 * [iconify](https://iconify.design/) [System UIcons](https://icon-sets.iconify.design/system-uicons/)
 * [lwHTTPd](http://scaprile.ldir.com.ar/cms/el-ingeniero/open-source-projects-im-working-on/lwhttpd/)
 * [Awaking the Raspberry Pico from deep sleep](https://ghubcoder.github.io/posts/awaking-the-pico/)
+* [MQTT - Home Assistant](https://www.home-assistant.io/integrations/mqtt)

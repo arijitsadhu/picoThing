@@ -10,6 +10,8 @@ project(picothing C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(PICO_BOARD pico_w)
+#BUG from pico-sdk 2.1.1
+set(PICOTOOL_FORCE_FETCH_FROM_GIT 1)
 
 # Initialize the Pico SDK
 pico_sdk_init()

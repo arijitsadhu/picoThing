@@ -86,6 +86,9 @@
 #define PPP_DEBUG                   LWIP_DBG_OFF
 #define SLIP_DEBUG                  LWIP_DBG_OFF
 #define DHCP_DEBUG                  LWIP_DBG_OFF
+#define MQTT_DEBUG                  LWIP_DBG_OFF
+
+#define MQTT_OUTPUT_RINGBUF_SIZE    1024
 
 #define LWIP_DNS_SUPPORT_MDNS_QUERIES 1
 #define LWIP_IGMP                   1
