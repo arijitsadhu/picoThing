@@ -27,5 +27,9 @@
     "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
     "C_Cpp.clang_format_fallbackStyle": "WebKit",
     "cortex-debug.variableUseNaturalFormat": false,
-    "cortex-debug.registerUseNaturalFormat": false
+    "cortex-debug.registerUseNaturalFormat": false,
+    "files.associations": {
+        "system_error": "c",
+        "random": "c"
+    }
 }
